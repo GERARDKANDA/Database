@@ -1,0 +1,106 @@
+---
+- hosts: galera
+  become: yes
+  tasks:
+    - name: Ensure TimescaleDB repository is absent
+      apt_repository:
+        repo: 'ppa:timescale/timescaledb-ppa'
+        state: absent
+
+    - name: Ensure Fortinet repository is absent
+      apt_repository:
+        repo: 'deb https://repo.fortinet.com/repo/7.0/ubuntu /bionic main'
+        state: absent
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Add MariaDB repository key
+      apt_key:
+        url: 'https://mariadb.org/mariadb_release_signing_key.asc'
+        state: present
+
+    - name: Add MariaDB repository
+      apt_repository:
+        repo: 'deb [arch=amd64] http://mirror.23media.com/mariadb/repo/10.6/debian buster main'
+        state: present
+
+    - name: Install required packages
+      apt:
+        name: ['mariadb-server', 'galera-3', 'mariadb-client', 'rsync', 'python3-pymysql']
+        state: present
+        update_cache: yes
+
+    - name: Ensure necessary directories exist
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: mysql
+        group: mysql
+      with_items:
+        - /var/lib/mysql
+        - /var/log/mysql
+        - /etc/mysql
+
+    - name: Unmask MariaDB service
+      command: systemctl unmask mariadb
+      notify: restart mariadb
+
+    - name: Configure MariaDB for Galera
+      template:
+        src: my.cnf.j2
+        dest: /etc/mysql/my.cnf
+      notify: restart mariadb
+
+    - name: Create Galera configuration
+      template:
+        src: galera.cnf.j2
+        dest: /etc/mysql/conf.d/galera.cnf
+      notify: restart mariadb
+
+    - name: Ensure MariaDB is started and enabled
+      service:
+        name: mariadb
+        state: started
+        enabled: yes
+
+    - name: Create Galera user
+      mysql_user:
+        name: galera
+        host: "{{ item }}"
+        password: "Gerard1234"
+        priv: "*.*:ALL,GRANT"
+        login_user: root
+        login_password: Gerard1234
+        login_host: "{{ item }}"
+        connect_timeout: 60
+      with_items:
+        - "192.168.102.130"
+        - "192.168.102.35"
+      notify: restart mariadb
+
+  handlers:
+    - name: restart mariadb
+      service:
+        name: mariadb
+        state: restarted
+
+- hosts: loadbalancer
+  become: yes
+  tasks:
+    - name: Install HAProxy
+      apt:
+        name: haproxy
+        state: present
+
+    - name: Configure HAProxy
+      template:
+        src: galera-loadbalancer.conf.j2
+        dest: /etc/haproxy/haproxy.cfg
+
+    - name: Enable and start HAProxy
+      systemd:
+        name: haproxy
+        enabled: yes
+        state: started
